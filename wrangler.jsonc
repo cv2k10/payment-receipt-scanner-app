@@ -29,7 +29,7 @@
     // Separate testing deployment: its own Worker URL and its own D1 database.
     // Deploy with: npx opennextjs-cloudflare deploy --env test
     "test": {
-      "name": "payment-receipt-scanner-app-test",
+      "name": "receipt-scan",
       "assets": {
         "directory": ".open-next/assets",
         "binding": "ASSETS"
@@ -37,7 +37,7 @@
       "services": [
         {
           "binding": "WORKER_SELF_REFERENCE",
-          "service": "payment-receipt-scanner-app-test"
+          "service": "receipt-scan"
         }
       ],
       "observability": { "enabled": true },

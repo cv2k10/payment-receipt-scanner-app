@@ -2,6 +2,7 @@ name: Deploy to Cloudflare
 
 # production: push to the default branch, or run manually with target=production
 # test:       push to the `test` branch, or run manually with target=test
+#             (Worker "receipt-scan" at receipt-scan.<subdomain>.workers.dev)
 #             (separate Worker URL and separate D1 database)
 on:
   push:
