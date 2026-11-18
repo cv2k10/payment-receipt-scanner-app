@@ -6,5 +6,6 @@ build/
 .wrangler/
 .dev.vars
 .env*
+!.dev.vars.example
 next-env.d.ts
 *.tsbuildinfo

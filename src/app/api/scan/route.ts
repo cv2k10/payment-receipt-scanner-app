@@ -1,10 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
-
-export const runtime = "nodejs";
-export const maxDuration = 60;
+import { getCloudflareContext } from "@opennextjs/cloudflare";
+import { requireAdmin } from "@/lib/auth";
 
 const INVOKE_URL = "https://integrate.api.nvidia.com/v1/chat/completions";
-const API_KEY = process.env.NVIDIA_API_KEY || process.env.NEXT_PUBLIC_NVIDIA_API_KEY || "";
+
+async function getApiKey() {
+  try {
+    const { env } = await getCloudflareContext({ async: true });
+    if (env.NVIDIA_API_KEY) return env.NVIDIA_API_KEY;
+  } catch {}
+  return process.env.NVIDIA_API_KEY || "";
+}
 
 const EXTRACTION_PROMPT = `You are an expert receipt OCR and data extraction system. Analyze this payment receipt image carefully and extract all structured data.
 
@@ -108,7 +114,18 @@ function normalize(data: any, fileName: string) {
   };
 }
 
+function toBase64(bytes: Uint8Array) {
+  let bin = "";
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    bin += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  }
+  return btoa(bin);
+}
+
 export async function POST(req: NextRequest) {
+  const denied = await requireAdmin(req);
+  if (denied) return denied;
   try {
     const form = await req.formData();
     const file = form.get("image") as File | null;
@@ -122,8 +139,12 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Image too large. Max 12MB." }, { status: 400 });
     }
 
-    const buffer = Buffer.from(await file.arrayBuffer());
-    const base64 = buffer.toString("base64");
+    const API_KEY = await getApiKey();
+    if (!API_KEY) {
+      return NextResponse.json({ error: "NVIDIA_API_KEY is not configured on the server." }, { status: 503 });
+    }
+
+    const base64 = toBase64(new Uint8Array(await file.arrayBuffer()));
     const mime = file.type || "image/jpeg";
     const dataUrl = `data:${mime};base64,${base64}`;
 
@@ -166,7 +187,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const json = await res.json();
+    const json = (await res.json()) as any;
     const content: string =
       json?.choices?.[0]?.message?.content ||
       json?.choices?.[0]?.message?.reasoning_content ||

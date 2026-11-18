@@ -1,0 +1,87 @@
+name: Deploy to Cloudflare
+
+on:
+  push:
+  workflow_dispatch:
+
+concurrency:
+  group: cloudflare-deploy
+  cancel-in-progress: false
+
+env:
+  D1_DATABASE_NAME: payment-receipt-scanner-db
+
+jobs:
+  deploy:
+    # Deploys only from the repository's default branch (or a manual run).
+    if: github.event_name == 'workflow_dispatch' || github.ref_name == github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      # Optional: only needed when the API token can access more than one account.
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check required secrets
+        env:
+          ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
+        run: |
+          missing=0
+          [ -n "$CLOUDFLARE_API_TOKEN" ] || { echo "::error::Repository secret CLOUDFLARE_API_TOKEN is not set"; missing=1; }
+          [ -n "$ADMIN_PASSWORD" ] || { echo "::error::Repository secret ADMIN_PASSWORD is not set"; missing=1; }
+          [ -n "$CLOUDFLARE_ACCOUNT_ID" ] || unset CLOUDFLARE_ACCOUNT_ID
+          exit $missing
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Typecheck and lint
+        run: |
+          npm run typecheck
+          npm run lint
+
+      - name: Ensure D1 database exists
+        run: |
+          [ -n "$CLOUDFLARE_ACCOUNT_ID" ] || unset CLOUDFLARE_ACCOUNT_ID
+          find_id() { npx wrangler d1 list --json | jq -r --arg n "$D1_DATABASE_NAME" '.[] | select(.name == $n) | .uuid' | head -n1; }
+          DB_ID=$(find_id)
+          if [ -z "$DB_ID" ]; then
+            echo "Creating D1 database $D1_DATABASE_NAME"
+            npx wrangler d1 create "$D1_DATABASE_NAME"
+            DB_ID=$(find_id)
+          fi
+          [ -n "$DB_ID" ] || { echo "::error::Could not find or create D1 database"; exit 1; }
+          echo "Using D1 database $DB_ID"
+          sed -i "s/00000000-0000-0000-0000-000000000000/$DB_ID/" wrangler.jsonc
+          grep -q "$DB_ID" wrangler.jsonc
+
+      - name: Apply D1 migrations
+        run: |
+          [ -n "$CLOUDFLARE_ACCOUNT_ID" ] || unset CLOUDFLARE_ACCOUNT_ID
+          npx wrangler d1 migrations apply DB --remote
+
+      - name: Build and deploy Worker
+        run: |
+          [ -n "$CLOUDFLARE_ACCOUNT_ID" ] || unset CLOUDFLARE_ACCOUNT_ID
+          npx opennextjs-cloudflare build
+          npx opennextjs-cloudflare deploy
+
+      - name: Upload Worker secrets
+        env:
+          ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
+          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+        run: |
+          [ -n "$CLOUDFLARE_ACCOUNT_ID" ] || unset CLOUDFLARE_ACCOUNT_ID
+          if [ -n "$NVIDIA_API_KEY" ]; then
+            jq -n --arg a "$ADMIN_PASSWORD" --arg n "$NVIDIA_API_KEY" '{ADMIN_PASSWORD: $a, NVIDIA_API_KEY: $n}' > secrets.json
+          else
+            echo "::warning::NVIDIA_API_KEY secret not set; receipt scanning will be disabled"
+            jq -n --arg a "$ADMIN_PASSWORD" '{ADMIN_PASSWORD: $a}' > secrets.json
+          fi
+          npx wrangler secret bulk secrets.json
+          rm -f secrets.json

@@ -5,7 +5,7 @@ import {
   ScanLine, Upload, Camera, FileImage, X, Check, Loader2, Sparkles, ReceiptText,
   Search, Download, Trash2, Pencil, Plus, Eye, ChevronDown, ChevronUp, Filter,
   Store, Calendar, CreditCard, Tag, DollarSign, TrendingUp, Receipt, Zap, AlertCircle,
-  FileSpreadsheet, Wand2, RefreshCw, Image as ImageIcon, CheckCircle2, Clock, Landmark
+  FileSpreadsheet, Wand2, RefreshCw, Image as ImageIcon, CheckCircle2, Clock, Landmark, Lock, LogOut
 } from "lucide-react";
 
 type Item = { name: string; quantity: number; unitPrice: number; total: number };
@@ -71,7 +71,70 @@ function emptyDraft(): Draft {
   };
 }
 
+type AuthState = "checking" | "locked" | "unconfigured" | "ok";
+
 export default function Home() {
+  const [auth, setAuth] = useState<AuthState>("checking");
+  useEffect(() => {
+    fetch("/api/auth/me", { cache: "no-store" })
+      .then(r => r.json() as Promise<{ authenticated?: boolean; configured?: boolean }>)
+      .then(j => setAuth(j.authenticated ? "ok" : j.configured ? "locked" : "unconfigured"))
+      .catch(() => setAuth("locked"));
+  }, []);
+  const logout = async () => { await fetch("/api/auth/logout", { method: "POST" }); setAuth("locked"); };
+
+  if (auth === "ok") return <ReceiptApp onLogout={logout} />;
+  return <LoginScreen state={auth} onSuccess={() => setAuth("ok")} />;
+}
+
+function LoginScreen({ state, onSuccess }: { state: AuthState; onSuccess: () => void }) {
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault(); setBusy(true); setError(null);
+    try {
+      const r = await fetch("/api/auth/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ password }) });
+      if (r.ok) { onSuccess(); return; }
+      const j: any = await r.json().catch(() => ({}));
+      setError(j.error || "Login failed");
+    } catch { setError("Network error"); } finally { setBusy(false); }
+  };
+  return (
+    <div className="min-h-screen grid place-items-center bg-[#10201B] px-4">
+      <form onSubmit={submit} className="w-full max-w-sm bg-white rounded-3xl p-7 shadow-2xl space-y-4">
+        <div className="flex items-center gap-3">
+          <div className="w-11 h-11 rounded-xl bg-emerald-400 grid place-items-center text-emerald-950"><ScanLine className="w-6 h-6" /></div>
+          <div>
+            <p className="font-black text-lg leading-none tracking-tight">ReceiptScan <span className="text-emerald-600">AI</span></p>
+            <p className="text-xs text-slate-500 mt-1">Admin sign in</p>
+          </div>
+        </div>
+        {state === "checking" ? (
+          <div className="flex justify-center py-6"><Loader2 className="w-6 h-6 animate-spin text-emerald-600" /></div>
+        ) : state === "unconfigured" ? (
+          <p className="text-sm bg-amber-50 text-amber-900 border border-amber-200 rounded-xl p-3">ADMIN_PASSWORD is not configured on the server. Set it as a Worker secret (or in <code>.dev.vars</code> locally).</p>
+        ) : (
+          <>
+            <label className="block">
+              <span className="text-[11px] uppercase tracking-wider font-bold text-slate-500">Password</span>
+              <div className="mt-1 flex items-center gap-2 border rounded-xl px-3 focus-within:ring-2 ring-emerald-400">
+                <Lock className="w-4 h-4 text-slate-400" />
+                <input type="password" autoFocus autoComplete="current-password" value={password} onChange={e => setPassword(e.target.value)} className="w-full py-2.5 outline-none text-sm" placeholder="Admin password" />
+              </div>
+            </label>
+            {error && <p className="text-sm text-red-600 flex items-center gap-1"><AlertCircle className="w-4 h-4" /> {error}</p>}
+            <button type="submit" disabled={busy || !password} className="w-full bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-bold rounded-full py-2.5 text-sm flex items-center justify-center gap-2">
+              {busy && <Loader2 className="w-4 h-4 animate-spin" />} Sign in
+            </button>
+          </>
+        )}
+      </form>
+    </div>
+  );
+}
+
+function ReceiptApp({ onLogout }: { onLogout: () => void }) {
   const [receipts, setReceipts] = useState<ReceiptRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [queue, setQueue] = useState<QueueItem[]>([]);
@@ -93,7 +156,7 @@ export default function Home() {
   const showToast = (m: string) => { setToast(m); setTimeout(() => setToast(null), 3400); };
 
   const fetchReceipts = useCallback(async () => {
-    try { const r = await fetch("/api/receipts"); const j = await r.json(); setReceipts(j.receipts || []); }
+    try { const r = await fetch("/api/receipts"); const j: any = await r.json(); setReceipts(j.receipts || []); }
     catch {} finally { setLoading(false); }
   }, []);
   useEffect(() => { fetchReceipts(); }, [fetchReceipts]);
@@ -105,7 +168,7 @@ export default function Home() {
       const thumb = await makeThumbnail(q.file);
       const fd = new FormData(); fd.append("image", q.file);
       const res = await fetch("/api/scan", { method: "POST", body: fd });
-      const j = await res.json();
+      const j: any = await res.json();
       if (!res.ok) throw new Error(j.error || "Scan failed");
       const d = j.data;
       const draft: Draft = {
@@ -221,13 +284,14 @@ export default function Home() {
             <div className="w-10 h-10 rounded-xl bg-emerald-400 grid place-items-center text-emerald-950"><ScanLine className="w-6 h-6" /></div>
             <div>
               <p className="font-black text-lg leading-none tracking-tight">ReceiptScan <span className="text-emerald-400">AI</span></p>
-              <p className="text-[11px] text-emerald-200/80 mt-0.5">Payment receipt scanner → table • NVIDIA Mistral Large</p>
+              <p className="text-[11px] text-emerald-200/80 mt-0.5">Payment receipt scanner → table • NVIDIA Mistral Large • Cloudflare D1</p>
             </div>
           </div>
           <div className="flex items-center gap-2">
             <span className="hidden md:flex items-center gap-1.5 text-xs bg-white/10 px-3 py-1.5 rounded-full"><span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" /> AI Online</span>
             <button onClick={exportCSV} className="hidden sm:flex items-center gap-1.5 bg-white text-slate-900 px-3 py-2 rounded-full text-xs font-bold hover:bg-emerald-50"><Download className="w-4 h-4" /> Export CSV</button>
             <button onClick={() => setEditing({ mode: "new", draft: emptyDraft() })} className="flex items-center gap-1.5 bg-emerald-400 text-emerald-950 px-3 py-2 rounded-full text-xs font-bold hover:bg-emerald-300"><Plus className="w-4 h-4" /> Add Manually</button>
+            <button onClick={onLogout} title="Sign out" className="flex items-center gap-1.5 bg-white/10 hover:bg-white/20 px-3 py-2 rounded-full text-xs font-bold"><LogOut className="w-4 h-4" /><span className="hidden sm:inline">Sign out</span></button>
           </div>
         </div>
       </header>

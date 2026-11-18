@@ -1,24 +1,32 @@
-import { drizzle } from "drizzle-orm/node-postgres";
-import { Pool } from "pg";
+import { getCloudflareContext } from "@opennextjs/cloudflare";
+import { drizzle } from "drizzle-orm/d1";
+import type { ReceiptRecord } from "./schema";
 
-const databaseUrl = process.env.DATABASE_URL;
-
-if (!databaseUrl) {
-  throw new Error("DATABASE_URL is required");
+/** Drizzle client bound to the Cloudflare D1 database (binding: DB). */
+export async function getDb() {
+  const { env } = await getCloudflareContext({ async: true });
+  return drizzle(env.DB);
 }
 
-const globalForDb = globalThis as typeof globalThis & {
-  __arenaNextJsPostgresqlPool?: Pool;
+const money = (n: number | null | undefined) => (Number(n) || 0).toFixed(2);
+
+/**
+ * Keep the API response shape identical to the original PostgreSQL version,
+ * where numeric columns were returned as fixed-2 decimal strings.
+ */
+export function serializeReceipt(r: ReceiptRecord) {
+  return {
+    ...r,
+    subtotal: money(r.subtotal),
+    tax: money(r.tax),
+    tip: money(r.tip),
+    discount: money(r.discount),
+    total: money(r.total),
+    confidence: r.confidence == null ? null : money(r.confidence),
+  };
+}
+
+export const toNum = (v: unknown) => {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
 };
-
-export const pool =
-  globalForDb.__arenaNextJsPostgresqlPool ??
-  new Pool({
-    connectionString: databaseUrl,
-  });
-
-if (process.env.NODE_ENV !== "production") {
-  globalForDb.__arenaNextJsPostgresqlPool = pool;
-}
-
-export const db = drizzle(pool);

@@ -1,14 +1,18 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/db";
+import { getDb, serializeReceipt, toNum } from "@/db";
 import { receipts } from "@/db/schema";
+import { requireAdmin } from "@/lib/auth";
 import { desc, sql } from "drizzle-orm";
 
 export const dynamic = "force-dynamic";
 
-export async function GET() {
+export async function GET(req: NextRequest) {
+  const denied = await requireAdmin(req);
+  if (denied) return denied;
   try {
-    const rows = await db.select().from(receipts).orderBy(desc(receipts.createdAt)).limit(500);
-    return NextResponse.json({ receipts: rows });
+    const db = await getDb();
+    const rows = await db.select().from(receipts).orderBy(desc(receipts.createdAt), desc(receipts.id)).limit(500);
+    return NextResponse.json({ receipts: rows.map(serializeReceipt) });
   } catch (e: any) {
     // If table doesn't exist yet, return empty
     return NextResponse.json({ receipts: [], error: e?.message });
@@ -16,8 +20,11 @@ export async function GET() {
 }
 
 export async function POST(req: NextRequest) {
+  const denied = await requireAdmin(req);
+  if (denied) return denied;
   try {
-    const body = await req.json();
+    const db = await getDb();
+    const body = (await req.json()) as any;
     const [row] = await db
       .insert(receipts)
       .values({
@@ -29,20 +36,20 @@ export async function POST(req: NextRequest) {
         category: body.category || "Other",
         paymentMethod: body.paymentMethod || "Card",
         currency: body.currency || "USD",
-        subtotal: String(body.subtotal ?? 0),
-        tax: String(body.tax ?? 0),
-        tip: String(body.tip ?? 0),
-        discount: String(body.discount ?? 0),
-        total: String(body.total ?? 0),
+        subtotal: toNum(body.subtotal),
+        tax: toNum(body.tax),
+        tip: toNum(body.tip),
+        discount: toNum(body.discount),
+        total: toNum(body.total),
         items: Array.isArray(body.items) ? body.items : [],
         notes: body.notes || null,
         fileName: body.fileName || null,
         imageUrl: body.imageUrl || null,
         rawText: body.rawText || null,
-        confidence: body.confidence != null ? String(body.confidence) : null,
+        confidence: body.confidence != null ? toNum(body.confidence) : null,
       })
       .returning();
-    return NextResponse.json({ receipt: row }, { status: 201 });
+    return NextResponse.json({ receipt: serializeReceipt(row) }, { status: 201 });
   } catch (e: any) {
     console.error(e);
     return NextResponse.json({ error: e?.message || "Failed to save receipt" }, { status: 500 });
@@ -50,10 +57,12 @@ export async function POST(req: NextRequest) {
 }
 
 // Seed demo data
-export async function PUT() {
+export async function PUT(req: NextRequest) {
+  const denied = await requireAdmin(req);
+  if (denied) return denied;
   try {
-    const countRes: any = await db.execute(sql`select count(*)::int as c from receipts`);
-    const c = countRes.rows?.[0]?.c ?? 0;
+    const db = await getDb();
+    const [{ c }] = await db.select({ c: sql<number>`count(*)` }).from(receipts);
     if (c > 0) return NextResponse.json({ message: "Already has data", count: c });
 
     const demos = [
@@ -66,11 +75,11 @@ export async function PUT() {
         category: "Groceries",
         paymentMethod: "Card",
         currency: "USD",
-        subtotal: "86.42",
-        tax: "7.18",
-        tip: "0",
-        discount: "0",
-        total: "93.60",
+        subtotal: 86.42,
+        tax: 7.18,
+        tip: 0,
+        discount: 0,
+        total: 93.60,
         items: [
           { name: "Organic Avocados (4ct)", quantity: 1, unitPrice: 6.99, total: 6.99 },
           { name: "Almond Milk 64oz", quantity: 2, unitPrice: 4.49, total: 8.98 },
@@ -82,7 +91,7 @@ export async function PUT() {
           { name: "Cold Brew Coffee", quantity: 1, unitPrice: 8.15, total: 8.15 },
         ],
         fileName: "wholefoods-receipt.jpg",
-        confidence: "96",
+        confidence: 96,
       },
       {
         merchant: "Starbucks",
@@ -93,11 +102,11 @@ export async function PUT() {
         category: "Coffee",
         paymentMethod: "Mobile Pay",
         currency: "USD",
-        subtotal: "12.45",
-        tax: "1.05",
-        tip: "2.00",
-        discount: "0",
-        total: "15.50",
+        subtotal: 12.45,
+        tax: 1.05,
+        tip: 2.00,
+        discount: 0,
+        total: 15.50,
         items: [
           { name: "Grande Caramel Latte", quantity: 1, unitPrice: 6.45, total: 6.45 },
           { name: "Butter Croissant", quantity: 1, unitPrice: 3.75, total: 3.75 },
@@ -105,7 +114,7 @@ export async function PUT() {
           { name: "Banana Nut Loaf", quantity: 1, unitPrice: 1.45, total: 1.45 },
         ],
         fileName: "starbucks.jpg",
-        confidence: "98",
+        confidence: 98,
       },
       {
         merchant: "Shell Gas Station",
@@ -116,14 +125,14 @@ export async function PUT() {
         category: "Fuel",
         paymentMethod: "Card",
         currency: "USD",
-        subtotal: "52.30",
-        tax: "0",
-        tip: "0",
-        discount: "0",
-        total: "52.30",
+        subtotal: 52.30,
+        tax: 0,
+        tip: 0,
+        discount: 0,
+        total: 52.30,
         items: [{ name: "Unleaded 87 - 13.42 gal @ $3.897", quantity: 1, unitPrice: 52.3, total: 52.3 }],
         fileName: "shell-fuel.jpg",
-        confidence: "94",
+        confidence: 94,
       },
       {
         merchant: "Olive Garden",
@@ -134,11 +143,11 @@ export async function PUT() {
         category: "Dining",
         paymentMethod: "Card",
         currency: "USD",
-        subtotal: "68.97",
-        tax: "6.21",
-        tip: "13.00",
-        discount: "0",
-        total: "88.18",
+        subtotal: 68.97,
+        tax: 6.21,
+        tip: 13.00,
+        discount: 0,
+        total: 88.18,
         items: [
           { name: "Chicken Alfredo", quantity: 1, unitPrice: 19.99, total: 19.99 },
           { name: "Shrimp Scampi", quantity: 1, unitPrice: 21.49, total: 21.49 },
@@ -146,12 +155,12 @@ export async function PUT() {
           { name: "Tiramisu", quantity: 1, unitPrice: 7.51, total: 7.51 },
         ],
         fileName: "olive-garden.jpg",
-        confidence: "91",
+        confidence: 91,
       },
     ];
 
-    const inserted = await db.insert(receipts).values(demos as any).returning();
-    return NextResponse.json({ receipts: inserted });
+    const inserted = await db.insert(receipts).values(demos).returning();
+    return NextResponse.json({ receipts: inserted.map(serializeReceipt) });
   } catch (e: any) {
     return NextResponse.json({ error: e?.message }, { status: 500 });
   }
