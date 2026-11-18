@@ -1,27 +1,49 @@
 name: Deploy to Cloudflare
 
+# production: push to the default branch, or run manually with target=production
+# test:       push to the `test` branch, or run manually with target=test
+#             (separate Worker URL and separate D1 database)
 on:
   push:
   workflow_dispatch:
+    inputs:
+      target:
+        description: Deployment target
+        type: choice
+        options: [production, test]
+        default: production
 
 concurrency:
-  group: cloudflare-deploy
+  group: cloudflare-deploy-${{ github.event.inputs.target || (github.ref_name == 'test' && 'test') || 'production' }}
   cancel-in-progress: false
-
-env:
-  D1_DATABASE_NAME: payment-receipt-scanner-db
 
 jobs:
   deploy:
-    # Deploys only from the repository's default branch (or a manual run).
-    if: github.event_name == 'workflow_dispatch' || github.ref_name == github.event.repository.default_branch
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.ref_name == github.event.repository.default_branch ||
+      github.ref_name == 'test'
     runs-on: ubuntu-latest
     env:
+      TARGET: ${{ github.event.inputs.target || (github.ref_name == 'test' && 'test') || 'production' }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       # Optional: only needed when the API token can access more than one account.
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Resolve target settings
+        run: |
+          if [ "$TARGET" = "test" ]; then
+            echo "D1_DATABASE_NAME=payment-receipt-scanner-db-test" >> "$GITHUB_ENV"
+            echo "D1_PLACEHOLDER=11111111-1111-1111-1111-111111111111" >> "$GITHUB_ENV"
+            echo "ENV_FLAG=--env test" >> "$GITHUB_ENV"
+          else
+            echo "D1_DATABASE_NAME=payment-receipt-scanner-db" >> "$GITHUB_ENV"
+            echo "D1_PLACEHOLDER=00000000-0000-0000-0000-000000000000" >> "$GITHUB_ENV"
+            echo "ENV_FLAG=" >> "$GITHUB_ENV"
+          fi
+          echo "Deploying target: $TARGET"
 
       - name: Check required secrets
         env:
@@ -30,7 +52,6 @@ jobs:
           missing=0
           [ -n "$CLOUDFLARE_API_TOKEN" ] || { echo "::error::Repository secret CLOUDFLARE_API_TOKEN is not set"; missing=1; }
           [ -n "$ADMIN_PASSWORD" ] || { echo "::error::Repository secret ADMIN_PASSWORD is not set"; missing=1; }
-          [ -n "$CLOUDFLARE_ACCOUNT_ID" ] || unset CLOUDFLARE_ACCOUNT_ID
           exit $missing
 
       - uses: actions/setup-node@v4
@@ -57,31 +78,34 @@ jobs:
           fi
           [ -n "$DB_ID" ] || { echo "::error::Could not find or create D1 database"; exit 1; }
           echo "Using D1 database $DB_ID"
-          sed -i "s/00000000-0000-0000-0000-000000000000/$DB_ID/" wrangler.jsonc
+          sed -i "s/$D1_PLACEHOLDER/$DB_ID/" wrangler.jsonc
           grep -q "$DB_ID" wrangler.jsonc
 
       - name: Apply D1 migrations
         run: |
           [ -n "$CLOUDFLARE_ACCOUNT_ID" ] || unset CLOUDFLARE_ACCOUNT_ID
-          npx wrangler d1 migrations apply DB --remote
+          npx wrangler d1 migrations apply DB --remote $ENV_FLAG
 
       - name: Build and deploy Worker
         run: |
           [ -n "$CLOUDFLARE_ACCOUNT_ID" ] || unset CLOUDFLARE_ACCOUNT_ID
           npx opennextjs-cloudflare build
-          npx opennextjs-cloudflare deploy
+          npx opennextjs-cloudflare deploy $ENV_FLAG
 
       - name: Upload Worker secrets
         env:
-          ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
+          # The test target uses ADMIN_PASSWORD_TEST when set, otherwise ADMIN_PASSWORD.
+          ADMIN_PASSWORD: ${{ (github.event.inputs.target == 'test' || github.ref_name == 'test') && secrets.ADMIN_PASSWORD_TEST || secrets.ADMIN_PASSWORD }}
+          ADMIN_PASSWORD_FALLBACK: ${{ secrets.ADMIN_PASSWORD }}
           NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
         run: |
           [ -n "$CLOUDFLARE_ACCOUNT_ID" ] || unset CLOUDFLARE_ACCOUNT_ID
+          [ -n "$ADMIN_PASSWORD" ] || ADMIN_PASSWORD="$ADMIN_PASSWORD_FALLBACK"
           if [ -n "$NVIDIA_API_KEY" ]; then
             jq -n --arg a "$ADMIN_PASSWORD" --arg n "$NVIDIA_API_KEY" '{ADMIN_PASSWORD: $a, NVIDIA_API_KEY: $n}' > secrets.json
           else
             echo "::warning::NVIDIA_API_KEY secret not set; receipt scanning will be disabled"
             jq -n --arg a "$ADMIN_PASSWORD" '{ADMIN_PASSWORD: $a}' > secrets.json
           fi
-          npx wrangler secret bulk secrets.json
+          npx wrangler secret bulk secrets.json $ENV_FLAG
           rm -f secrets.json
